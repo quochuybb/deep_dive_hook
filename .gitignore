@@ -39,3 +39,14 @@
 
 # debug information files
 *.dwo
+
+.vs/
+*.user
+*.suo
+*.slnx
+x64/
+x86/
+Debug/
+Release/
+bin/
+obj/
