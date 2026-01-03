@@ -5,7 +5,9 @@
 #include <vector>
 #include <string>
 #include "MinHook.h"
-
+#include <Psapi.h>
+#include <sstream>
+#pragma comment(lib, "Psapi.lib")
 #ifndef STB_TEXT_HAS_SELECTION
 #define STB_TEXT_HAS_SELECTION(s)   ((s)->select_start != (s)->select_end)
 #endif
@@ -40,6 +42,7 @@ WNDPROC                 oWndProc = nullptr;
 
 typedef void(__fastcall* FixedUpdate_t)(void* instance);
 FixedUpdate_t original_FixedUpdate = nullptr;
+
 
 void __fastcall Hooked_FixedUpdate(void* instance) {
     if (instance != nullptr) {
@@ -77,7 +80,7 @@ void __fastcall Hooked_FixedUpdate(void* instance) {
 extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    if (uMsg == WM_KEYDOWN || wParam == VK_INSERT) {
+    if (uMsg == WM_KEYDOWN && wParam == VK_F1) {
         std::cout << "[LOG] Key Pressed" << std::endl;
         g_ShowMenu = !g_ShowMenu;
         ImGui::GetIO().MouseDrawCursor = g_ShowMenu;
@@ -124,7 +127,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             return oPresent(pSwapChain, SyncInterval, Flags);
         }
     }
-
     if (g_ShowMenu) {
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
@@ -163,6 +165,51 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     }
 
     return oPresent(pSwapChain, SyncInterval, Flags);
+}
+std::vector<int> PatternToByte(const char* pattern) {
+	std::vector<int> bytes;
+	char* start = const_cast<char*>(pattern);
+	char* end = const_cast<char*>(pattern) + strlen(pattern);
+
+    for (char* current = start; current < end; ++current) {
+        if (*current == '?') {
+            ++current;
+			if (*current == '?') ++current;
+            bytes.push_back(-1);
+        }
+        else {
+			bytes.push_back(strtoul(current, &current, 16));
+        }
+    }
+	return bytes;
+}
+
+uintptr_t FindPattern(HMODULE hModule, const char* pattern) {
+	MODULEINFO modInfo;
+	GetModuleInformation(GetCurrentProcess(), hModule, &modInfo, sizeof(MODULEINFO));
+
+	uintptr_t startAddress = (uintptr_t)modInfo.lpBaseOfDll;
+	size_t size = modInfo.SizeOfImage;
+
+	std::vector<int> patternBytes = PatternToByte(pattern);
+	uintptr_t patternLength = patternBytes.size();
+
+	int* patternData = patternBytes.data();
+
+    for (uintptr_t i = 0; i < size - patternLength; ++i) {
+		bool found = true;
+        for (uintptr_t j = 0; j < patternLength; ++j) {
+			unsigned char byte = *(unsigned char*)(startAddress + i + j);
+            if (patternData[j] != -1 && patternData[j] != byte) {
+                found = false;
+                break;
+            }
+        }
+        if (found) {
+            return startAddress + i;
+        }
+    }
+    return 0;
 }
 
 
@@ -210,13 +257,23 @@ DWORD WINAPI InitThread(LPVOID lpParam) {
         Sleep(100);
         hGameAssembly = GetModuleHandleA("GameAssembly.dll");
     }
-    void* fixedUpdateAddr = (void*)((uintptr_t)hGameAssembly + RVA_FIXED_UPDATE);
-
+    const char* fixedUpdateSig = "40 53 48 81 EC C0 00 00 00 80 3D 4A 7F AD 01 00"; 
+    uintptr_t foundAddr = FindPattern(hGameAssembly, fixedUpdateSig);
     if (MH_Initialize() != MH_OK) return 1;
+	if (foundAddr != 0) {
+
+		void* fixedUpdateAddr = (void*)(foundAddr);
+        std::cout << "[SCAN] Found FixedUpdate at: %p" << std::endl;
+        MH_CreateHook(fixedUpdateAddr, &Hooked_FixedUpdate, (LPVOID*)&original_FixedUpdate);
+
+    }
+    else
+    {
+        std::cout << "[ERROR] Cannot find FixedUpdate pattern!" << std::endl;
+    }
 
     MH_CreateHook(presentAddr, &hkPresent, (LPVOID*)&oPresent);
 
-    MH_CreateHook(fixedUpdateAddr, &Hooked_FixedUpdate, (LPVOID*)&original_FixedUpdate);
 
     MH_EnableHook(MH_ALL_HOOKS);
 
