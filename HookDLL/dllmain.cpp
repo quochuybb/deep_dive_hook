@@ -27,7 +27,8 @@
 #define OFF_GRAVITY       0x34
 
 bool  g_ShowMenu = true;    
-bool  g_FlyMode = false;    
+bool  g_FlyMode = false; 
+bool  g_GodMode = false;
 float g_SpeedMultiplier = 1.0f;    
 float g_FlySpeed = 10.0f;
 
@@ -39,9 +40,73 @@ ID3D11RenderTargetView* mainRenderTargetView = nullptr;
 HWND                    window = nullptr;
 bool                    initImgui = false;
 WNDPROC                 oWndProc = nullptr;
+struct Vector2 { float x, y; }; 
+
+struct Damageable {
+    char pad_0000[0x58];
+    float m_Health; // 0x58
+};
+
+struct PlayerDamageable : Damageable {
+    char pad_005C[0x1C];
+    float m_Oxygen; // 0x78
+};
+
+void* g_LocalPlayer = nullptr;
+typedef void(__fastcall* PlayerUpdate_t)(void* instance);
+PlayerUpdate_t oPlayerUpdate = nullptr;
+
+void __fastcall hkPlayerUpdate(void* instance) {
+    if (instance != nullptr) {
+        g_LocalPlayer = instance;
+    }
+
+    return oPlayerUpdate(instance);
+}
+typedef void(__fastcall* InflictDamage_t)(
+    void* instance,             
+    float value,                
+    float invulnerabilityLength,
+    Vector2 position,           
+    int type,                   
+    int status,                
+    bool absolute,
+    bool forced,
+    bool allowFatalDamage,
+    void* damageSFX,           
+    void* inflictor            
+    );
+
+InflictDamage_t oInflictDamage = nullptr;
+
+void __fastcall hkInflictDamage(
+    void* instance, float value, float invulnerabilityLength, Vector2 position,
+    int type, int status, bool absolute, bool forced, bool allowFatalDamage,
+    void* damageSFX, void* inflictor)
+{
+    if (instance != nullptr && instance == g_LocalPlayer) {
+
+        if (g_GodMode) {
+            return;
+        }
+    }
+
+    return oInflictDamage(instance, value, invulnerabilityLength, position, type, status, absolute, forced, allowFatalDamage, damageSFX, inflictor);
+}
 
 typedef void(__fastcall* FixedUpdate_t)(void* instance);
 FixedUpdate_t original_FixedUpdate = nullptr;
+typedef HRESULT(__stdcall* ResizeBuffers_t)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
+ResizeBuffers_t oResizeBuffers = nullptr;
+HRESULT __stdcall hkResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
+    if (mainRenderTargetView) {
+        pContext->OMSetRenderTargets(0, 0, 0); 
+        mainRenderTargetView->Release();      
+        mainRenderTargetView = nullptr;        
+    }
+
+    return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+}
 
 
 void __fastcall Hooked_FixedUpdate(void* instance) {
@@ -127,6 +192,12 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             return oPresent(pSwapChain, SyncInterval, Flags);
         }
     }
+    if (mainRenderTargetView == NULL) {
+        ID3D11Texture2D* pBackBuffer;
+        pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (LPVOID*)&pBackBuffer);
+        pDevice->CreateRenderTargetView(pBackBuffer, NULL, &mainRenderTargetView);
+        pBackBuffer->Release();
+    }
     if (g_ShowMenu) {
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
@@ -144,6 +215,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Fly Power", &g_FlySpeed, 5.0f, 50.0f);
             ImGui::Unindent();
         }
+        ImGui::Separator();
+        ImGui::Checkbox("Enable God Mode", &g_GodMode);
+
 
         ImGui::Spacing();
 
@@ -271,7 +345,15 @@ DWORD WINAPI InitThread(LPVOID lpParam) {
     {
         std::cout << "[ERROR] Cannot find FixedUpdate pattern!" << std::endl;
     }
+    void* resizeAddr = (void*)pVTable[13];
+    uintptr_t baseAddr = (uintptr_t)hGameAssembly;
+    void* addrPlayerUpdate = (void*)(baseAddr + 0x321C10);
+    void* addrInflictDamage = (void*)(baseAddr + 0x28A7D0);
 
+    MH_CreateHook(addrPlayerUpdate, &hkPlayerUpdate, (LPVOID*)&oPlayerUpdate);
+
+    MH_CreateHook(addrInflictDamage, &hkInflictDamage, (LPVOID*)&oInflictDamage);
+    MH_CreateHook(resizeAddr, &hkResizeBuffers, (LPVOID*)&oResizeBuffers);
     MH_CreateHook(presentAddr, &hkPresent, (LPVOID*)&oPresent);
 
 
