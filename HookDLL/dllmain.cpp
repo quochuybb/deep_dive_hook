@@ -63,35 +63,21 @@ void __fastcall hkPlayerUpdate(void* instance) {
 
     return oPlayerUpdate(instance);
 }
-typedef void(__fastcall* InflictDamage_t)(
-    void* instance,             
-    float value,                
-    float invulnerabilityLength,
-    Vector2 position,           
-    int type,                   
-    int status,                
-    bool absolute,
-    bool forced,
-    bool allowFatalDamage,
-    void* damageSFX,           
-    void* inflictor            
-    );
+typedef void(__fastcall* InflictDamage_Struct_t)(void* instance, void* damageObj, void* inflictor);
+InflictDamage_Struct_t oInflictDamageStruct = nullptr;
 
-InflictDamage_t oInflictDamage = nullptr;
 
-void __fastcall hkInflictDamage(
-    void* instance, float value, float invulnerabilityLength, Vector2 position,
-    int type, int status, bool absolute, bool forced, bool allowFatalDamage,
-    void* damageSFX, void* inflictor)
-{
-    if (instance != nullptr && instance == g_LocalPlayer) {
+void __fastcall hkInflictDamageStruct(void* instance, void* damageObj, void* inflictor) {
+    std::cout << "[LOG] Hit! Instance: " << instance << std::endl;
 
-        if (g_GodMode) {
-            return;
+    if (g_GodMode && instance != nullptr) {
+        if (instance == g_LocalPlayer) {
+            std::cout << "[GOD MODE] Blocked damage for Player!" << std::endl;
+            return; 
         }
     }
 
-    return oInflictDamage(instance, value, invulnerabilityLength, position, type, status, absolute, forced, allowFatalDamage, damageSFX, inflictor);
+    return oInflictDamageStruct(instance, damageObj, inflictor);
 }
 
 typedef void(__fastcall* FixedUpdate_t)(void* instance);
@@ -146,7 +132,6 @@ extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam
 
 LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (uMsg == WM_KEYDOWN && wParam == VK_F1) {
-        std::cout << "[LOG] Key Pressed" << std::endl;
         g_ShowMenu = !g_ShowMenu;
         ImGui::GetIO().MouseDrawCursor = g_ShowMenu;
 
@@ -348,13 +333,23 @@ DWORD WINAPI InitThread(LPVOID lpParam) {
     void* resizeAddr = (void*)pVTable[13];
     uintptr_t baseAddr = (uintptr_t)hGameAssembly;
     void* addrPlayerUpdate = (void*)(baseAddr + 0x321C10);
-    void* addrInflictDamage = (void*)(baseAddr + 0x28A7D0);
+    void* addrInflictDamage = (void*)(baseAddr + 0x28A8D0);
 
-    MH_CreateHook(addrPlayerUpdate, &hkPlayerUpdate, (LPVOID*)&oPlayerUpdate);
+    unsigned char* pCheck = (unsigned char*)addrInflictDamage;
+    std::cout << "[DEBUG] Check Bytes at 0x28A8D0: ";
+    for (int i = 0; i < 5; i++) printf("%02X ", pCheck[i]);
+    std::cout << std::endl;
 
-    MH_CreateHook(addrInflictDamage, &hkInflictDamage, (LPVOID*)&oInflictDamage);
+    if (MH_CreateHook(addrInflictDamage, &hkInflictDamageStruct, (LPVOID*)&oInflictDamageStruct) != MH_OK) {
+        std::cout << "[ERROR] Failed to hook InflictDamage (Struct)!" << std::endl;
+    }
+    else {
+        std::cout << "[SUCCESS] Hook InflictDamage (Struct) created!" << std::endl;
+    }
+
     MH_CreateHook(resizeAddr, &hkResizeBuffers, (LPVOID*)&oResizeBuffers);
     MH_CreateHook(presentAddr, &hkPresent, (LPVOID*)&oPresent);
+    MH_CreateHook(addrPlayerUpdate, &hkPlayerUpdate, (LPVOID*)&oPlayerUpdate);
 
 
     MH_EnableHook(MH_ALL_HOOKS);
