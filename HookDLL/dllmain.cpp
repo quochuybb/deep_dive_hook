@@ -13,6 +13,7 @@
 #endif
 
 #include "ImGui/imgui.h"
+#include "SDK.h"
 #include "ImGui/imgui_impl_win32.h"
 #include "ImGui/imgui_impl_dx11.h"
 #include <iostream>
@@ -32,25 +33,13 @@ bool  g_GodMode = false;
 float g_SpeedMultiplier = 1.0f;    
 float g_FlySpeed = 10.0f;
 
-typedef HRESULT(__stdcall* Present_t)(IDXGISwapChain*, UINT, UINT);
-Present_t oPresent = nullptr;
 ID3D11Device* pDevice = nullptr;
 ID3D11DeviceContext* pContext = nullptr;
 ID3D11RenderTargetView* mainRenderTargetView = nullptr;
 HWND                    window = nullptr;
 bool                    initImgui = false;
 WNDPROC                 oWndProc = nullptr;
-struct Vector2 { float x, y; }; 
 
-struct Damageable {
-    char pad_0000[0x58];
-    float m_Health; // 0x58
-};
-
-struct PlayerDamageable : Damageable {
-    char pad_005C[0x1C];
-    float m_Oxygen; // 0x78
-};
 
 void* g_LocalPlayer = nullptr;
 typedef void(__fastcall* PlayerUpdate_t)(void* instance);
@@ -63,10 +52,9 @@ void __fastcall hkPlayerUpdate(void* instance) {
 
     return oPlayerUpdate(instance);
 }
+
 typedef void(__fastcall* InflictDamage_Struct_t)(void* instance, void* damageObj, void* inflictor);
 InflictDamage_Struct_t oInflictDamageStruct = nullptr;
-
-
 void __fastcall hkInflictDamageStruct(void* instance, void* damageObj, void* inflictor) {
     std::cout << "[LOG] Hit! Instance: " << instance << std::endl;
 
@@ -80,8 +68,8 @@ void __fastcall hkInflictDamageStruct(void* instance, void* damageObj, void* inf
     return oInflictDamageStruct(instance, damageObj, inflictor);
 }
 
-typedef void(__fastcall* FixedUpdate_t)(void* instance);
-FixedUpdate_t original_FixedUpdate = nullptr;
+
+
 typedef HRESULT(__stdcall* ResizeBuffers_t)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
 ResizeBuffers_t oResizeBuffers = nullptr;
 HRESULT __stdcall hkResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
@@ -94,7 +82,8 @@ HRESULT __stdcall hkResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, 
     return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
 }
 
-
+typedef void(__fastcall* FixedUpdate_t)(void* instance);
+FixedUpdate_t original_FixedUpdate = nullptr;
 void __fastcall Hooked_FixedUpdate(void* instance) {
     if (instance != nullptr) {
         if (g_SpeedMultiplier != 1.0f) {
@@ -146,6 +135,8 @@ LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
     return CallWindowProc(oWndProc, hWnd, uMsg, wParam, lParam);
 }
 
+typedef HRESULT(__stdcall* Present_t)(IDXGISwapChain*, UINT, UINT);
+Present_t oPresent = nullptr;
 HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
     if (!initImgui) {
         if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)&pDevice))) {
