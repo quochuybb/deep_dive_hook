@@ -32,6 +32,7 @@ bool  g_FlyMode = false;
 bool  g_GodMode = false;
 float g_SpeedMultiplier = 1.0f;    
 float g_FlySpeed = 10.0f;
+std::vector<std::string> g_LogConsole;
 
 ID3D11Device* pDevice = nullptr;
 ID3D11DeviceContext* pContext = nullptr;
@@ -39,24 +40,50 @@ ID3D11RenderTargetView* mainRenderTargetView = nullptr;
 HWND                    window = nullptr;
 bool                    initImgui = false;
 WNDPROC                 oWndProc = nullptr;
-
-
 void* g_LocalPlayer = nullptr;
+
+typedef void* (__fastcall* GetGameObject_t)(void* component);
+GetGameObject_t Call_GetGameObject = nullptr;
+typedef Il2CppString* (__fastcall* GetName_t)(void* object);
+GetName_t Call_GetName = nullptr;
+
+typedef void(__fastcall* UnityLog_t)(void* message);
+UnityLog_t oUnityLog = nullptr;
+void __fastcall hkUnityLog(void* message) {
+    if(message != nullptr){
+        Il2CppString* unityStr = (Il2CppString*)message;
+		std::string logMsg = UseString(unityStr);
+        if (g_LogConsole.size() >= 100) {
+            g_LogConsole.erase(g_LogConsole.begin());
+		}
+        g_LogConsole.push_back(logMsg);
+		std::cout << "[UNITY LOG] " << logMsg << std::endl;
+    }
+    return oUnityLog(message);
+}
+
 typedef void(__fastcall* PlayerUpdate_t)(void* instance);
 PlayerUpdate_t oPlayerUpdate = nullptr;
-
 void __fastcall hkPlayerUpdate(void* instance) {
     if (instance != nullptr) {
         g_LocalPlayer = instance;
     }
-
     return oPlayerUpdate(instance);
 }
 
 typedef void(__fastcall* InflictDamage_Struct_t)(void* instance, void* damageObj, void* inflictor);
 InflictDamage_Struct_t oInflictDamageStruct = nullptr;
 void __fastcall hkInflictDamageStruct(void* instance, void* damageObj, void* inflictor) {
-    std::cout << "[LOG] Hit! Instance: " << instance << std::endl;
+    std::string objectName = "Unknown";
+    if (instance != nullptr && Call_GetGameObject && Call_GetName) {
+        void* gameObject = Call_GetGameObject(instance);
+
+        if (gameObject) {
+            Il2CppString* unityStr = Call_GetName(gameObject);
+            objectName = UseString(unityStr);
+        }
+    }
+    std::cout << "[LOG] Hit! Instance: " << objectName << std::endl;
 
     if (g_GodMode && instance != nullptr) {
         if (instance == g_LocalPlayer) {
@@ -67,8 +94,6 @@ void __fastcall hkInflictDamageStruct(void* instance, void* damageObj, void* inf
 
     return oInflictDamageStruct(instance, damageObj, inflictor);
 }
-
-
 
 typedef HRESULT(__stdcall* ResizeBuffers_t)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
 ResizeBuffers_t oResizeBuffers = nullptr;
@@ -130,7 +155,6 @@ LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam);
         return true;
     }
-
 
     return CallWindowProc(oWndProc, hWnd, uMsg, wParam, lParam);
 }
@@ -194,7 +218,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Separator();
         ImGui::Checkbox("Enable God Mode", &g_GodMode);
 
-
         ImGui::Spacing();
 
         ImGui::Text("Movement Speed Multiplier:");
@@ -205,6 +228,24 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (ImGui::Button("Reset All")) {
             g_FlyMode = false;
             g_SpeedMultiplier = 1.0f;
+            g_GodMode = false;
+        }
+        ImGui::Separator();
+        ImGui::Text("GAME CONSOLE LOG:");
+
+        ImGui::BeginChild("LogRegion", ImVec2(0, 150), true, ImGuiWindowFlags_HorizontalScrollbar);
+
+        for (const auto& log : g_LogConsole) {
+            ImGui::TextUnformatted(log.c_str());
+        }
+
+        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
+            ImGui::SetScrollHereY(1.0f);
+
+        ImGui::EndChild();
+
+        if (ImGui::Button("Clear Console")) {
+            g_LogConsole.clear();
         }
 
         ImGui::End();
@@ -213,7 +254,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         pContext->OMSetRenderTargets(1, &mainRenderTargetView, NULL);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     }
-
     return oPresent(pSwapChain, SyncInterval, Flags);
 }
 std::vector<int> PatternToByte(const char* pattern) {
@@ -325,11 +365,21 @@ DWORD WINAPI InitThread(LPVOID lpParam) {
     uintptr_t baseAddr = (uintptr_t)hGameAssembly;
     void* addrPlayerUpdate = (void*)(baseAddr + 0x321C10);
     void* addrInflictDamage = (void*)(baseAddr + 0x28A8D0);
+	void* addrUnityLog = (void*)(baseAddr + 0x11FBBA0);
+	Call_GetGameObject = (GetGameObject_t)(baseAddr + 0x12376E0);
+	Call_GetName = (GetName_t)(baseAddr + 0x12427A0);
 
     unsigned char* pCheck = (unsigned char*)addrInflictDamage;
     std::cout << "[DEBUG] Check Bytes at 0x28A8D0: ";
     for (int i = 0; i < 5; i++) printf("%02X ", pCheck[i]);
     std::cout << std::endl;
+
+    if (MH_CreateHook(addrUnityLog, &hkUnityLog, (LPVOID*)&oUnityLog) != MH_OK) {
+        std::cout << "[ERROR] Failed to hook Unity Log (Struct)!" << std::endl;
+    }
+    else {
+        std::cout << "[SUCCESS] Hook Unity Log (Struct) created!" << std::endl;
+    }
 
     if (MH_CreateHook(addrInflictDamage, &hkInflictDamageStruct, (LPVOID*)&oInflictDamageStruct) != MH_OK) {
         std::cout << "[ERROR] Failed to hook InflictDamage (Struct)!" << std::endl;
