@@ -434,6 +434,7 @@ DWORD WINAPI InitThread(LPVOID lpParam) {
 }
 
 BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
+	//Refactor code and add new feture in other branches
     if (dwReason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
         CreateThread(NULL, 0, InitThread, NULL, 0, NULL);
