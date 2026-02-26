@@ -57,6 +57,9 @@
     <ClInclude Include="IL2CPP_Resolver.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="UnityAPI.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -81,6 +84,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ImGui\imgui_widgets.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="IL2CPP_Resolver.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="UnityAPI.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

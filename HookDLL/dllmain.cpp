@@ -3,42 +3,40 @@
 #include <d3d11.h>
 #include <vector>
 #include <string>
-#include <map>
-#include <mutex> 
-#include "MinHook.h"
-#include <Psapi.h>
-#include <sstream>
 #include <iostream>
+#include <chrono>
+#include <map>
+#include "MinHook.h"
+#include "IL2CPP_Resolver.h" 
+#include "UnityAPI.h"        
 
 #include "ImGui/imgui.h"
 #include "ImGui/imgui_impl_win32.h"
 #include "ImGui/imgui_impl_dx11.h"
-#include "SDK.h" 
 
 #pragma comment(lib, "d3d11.lib")
-#pragma comment(lib, "Psapi.lib")
+std::vector<void*> g_Players;
+std::vector<void*> g_Enemies;
+std::vector<void*> g_Others;
+void CreateDebugConsole() {
+    AllocConsole();
+    FILE* fDummy;
+    freopen_s(&fDummy, "CONOUT$", "w", stdout);
+    freopen_s(&fDummy, "CONOUT$", "w", stderr);
+    freopen_s(&fDummy, "CONIN$", "r", stdin);
+    SetConsoleTitleA("QA Tester - Debug Console");
+}
+void Log(const char* msg) {
+    if (msg) {
+        printf("%s\n", msg);
+    }
+}
 
-#define RVA_ACTOR_UPDATE  0x289230 
-
-#define OFF_SPEED_X       0x3C
-#define OFF_SPEED_Y       0x40
-#define OFF_GRAVITY       0x34
-
-bool  g_ShowMenu = true;
-bool  g_FlyMode = false;
-bool  g_GodMode = false;
-bool  g_EnableESP = false;
-float g_SpeedMultiplier = 1.0f;
-float g_FlySpeed = 10.0f;
-
-float g_ESP_Height = 16.0f;
-float g_ESP_Width = 16.0f;
-
-std::mutex g_MapMutex;
-std::map<void*, Vector3> g_LiveEnemies;
-
-void* g_CurrentRoom = nullptr;
-std::vector<std::string> g_LogConsole;
+bool g_ShowMenu = true;
+bool g_EnableESP = false;
+void* g_SelectedObject = nullptr;
+std::vector<void*> g_RootTransforms;
+static char SearchUnityTypeValue[256] = "Rigidbody2D";
 
 ID3D11Device* pDevice = nullptr;
 ID3D11DeviceContext* pContext = nullptr;
@@ -46,195 +44,582 @@ ID3D11RenderTargetView* mainRenderTargetView = nullptr;
 HWND window = nullptr;
 bool initImgui = false;
 WNDPROC oWndProc = nullptr;
-void* g_LocalPlayer = nullptr;
-void* g_CachedCamera = nullptr;
 
-typedef void* (__fastcall* GetGameObject_t)(void* component);
-GetGameObject_t Call_GetGameObject = nullptr;
-
-typedef Il2CppString* (__fastcall* GetName_t)(void* object);
-GetName_t Call_GetName = nullptr;
-
-typedef void* (__fastcall* GetMainCamera_t)();
-GetMainCamera_t fnGetMainCamera = nullptr;
-
-typedef Vector3(__fastcall* WorldToScreen_t)(void* camera, Vector3 position);
-WorldToScreen_t fnWorldToScreen = nullptr;
-
-typedef void(__fastcall* GetPos_Injected_t)(void* nativeTransform, Vector3* outPos);
-GetPos_Injected_t fnGetPosition_Injected = nullptr;
-
-typedef void* (__fastcall* GetTransform_t)(void* component);
-GetTransform_t fnGetTransform = nullptr;
-
-bool IsValidPtr(void* p) {
-    return (p != nullptr && (uintptr_t)p > 0x10000 && (uintptr_t)p < 0x7FFFFFFFFFFF);
+bool IsValidPtr(void* ptr) {
+    if (!ptr) return false;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0) return false;
+    return (mbi.State == MEM_COMMIT && (mbi.Protect & PAGE_READONLY || mbi.Protect & PAGE_READWRITE || mbi.Protect & PAGE_EXECUTE_READ || mbi.Protect & PAGE_EXECUTE_READWRITE));
 }
 
 
-void SafeGetPosition(void* componentPtr, Vector3* outPos) {
-    *outPos = { 0,0,0 };
-    if (!fnGetTransform || !componentPtr) return;
+void* GetUnityType(const char* typeName) {
+    if (!il2cpp_domain_get || !il2cpp_domain_get_assemblies || !il2cpp_class_from_name) return nullptr;
+    Il2CppDomain* domain = il2cpp_domain_get();
+    if (!domain) return nullptr;
+    size_t size = 0;
+    Il2CppAssembly** assemblies = il2cpp_domain_get_assemblies(domain, &size);
+    if (!assemblies || size == 0) return nullptr;
 
-    void* transform = fnGetTransform(componentPtr);
-    if (!IsValidPtr(transform)) return;
+    for (size_t i = 0; i < size; i++) {
+        if (!IsValidPtr(assemblies) || !IsValidPtr(assemblies[i])) continue;
+        Il2CppImage* image = assemblies[i]->image;
+        if (!IsValidPtr(image)) continue;
 
-    void* nativeTransform = nullptr;
-    __try {
-        nativeTransform = *(void**)((uintptr_t)transform + 0x10);
-
+        Il2CppClass* klass = il2cpp_class_from_name(image, "UnityEngine", typeName);
+        if (klass) return il2cpp_type_get_object(il2cpp_class_get_type(klass));
     }
-    __except (1) { 
-		std::cout << "Exception in SafeGetPosition while dereferencing nativeTransform." << std::endl;
-        return; 
-    }
-
-    if (!IsValidPtr(nativeTransform)) return;
-
-    if (fnGetPosition_Injected) {
-        __try {
-            fnGetPosition_Injected(nativeTransform, outPos);
-
-        }
-        __except (1) {
-			std::cout << "Exception in SafeGetPosition while calling GetPosition_Injected." << std::endl;
-            *outPos = { 0,0,0 }; 
-        }
-    }
+    return nullptr;
 }
+void SafeGetNameViaReflection(void* obj, char* outBuf, size_t bufSize) {
+    outBuf[0] = '\0'; 
+    if (!obj) return;
 
-bool SafeWorldToScreen(void* camera, Vector3 worldPos, Vector3* outResult) {
-    if (!camera || !fnWorldToScreen) return false;
-    __try {
-        *outResult = fnWorldToScreen(camera, worldPos);
-    }
-    __except (1) { return false; }
-    return true;
-}
+    static const MethodInfo* getNameMethod = nullptr;
 
-void* SafeGetMainCamera() {
-    if (!fnGetMainCamera) return nullptr;
-    void* cam = nullptr;
-    __try { cam = fnGetMainCamera(); }
-    __except (1) { cam = nullptr; }
-    return cam;
-}
+    if (!getNameMethod) {
+        Il2CppDomain* domain = il2cpp_domain_get();
+        if (!domain) return;
+        size_t size = 0;
+        Il2CppAssembly** assemblies = il2cpp_domain_get_assemblies(domain, &size);
+        if (!assemblies) return;
 
-
-
-void DrawColliderBox(void* camera, Vector3 enemyPos) {
-    Vector3 screenPos3;
-
-    if (!SafeWorldToScreen(camera, enemyPos, &screenPos3)) return;
-
-    if (screenPos3.z <= 0) return;
-
-    float screenHeight = ImGui::GetIO().DisplaySize.y;
-    Vector2 centerScreen = { screenPos3.x, screenHeight - screenPos3.y };
-
-    float distance = screenPos3.z;
-    if (distance < 1.0f) distance = 1.0f;
-
-    float boxSize = 10000.0f / distance;
-
-    if (boxSize > 200.0f) boxSize = 200.0f;
-    if (boxSize < 5.0f) boxSize = 5.0f;
-
-    float x = centerScreen.x - (boxSize / 2.0f);
-    float y = centerScreen.y - (boxSize / 2.0f);
-
-    ImGui::GetBackgroundDrawList()->AddRect(
-        ImVec2(x, y),
-        ImVec2(x + boxSize, y + boxSize),
-        IM_COL32(0, 255, 0, 255), 
-        0.0f, 
-        0,
-        1.5f  
-    );
-}
-
-void DrawEnemyESP() {
-    g_CachedCamera = SafeGetMainCamera();
-    if (!IsValidPtr(g_CachedCamera)) return;
-
-    std::lock_guard<std::mutex> lock(g_MapMutex);
-
-    if (g_LiveEnemies.empty()) return;
-
-    auto it = g_LiveEnemies.begin();
-    while (it != g_LiveEnemies.end()) {
-        void* enemyInstance = it->first;
-        Vector3 pos = it->second;
-
-        if (!IsValidPtr(enemyInstance)) {
-            it = g_LiveEnemies.erase(it);
-            continue;
-        }
-
-        DrawColliderBox(g_CachedCamera, pos);
-        ++it;
-    }
-}
-
-
-typedef void(__fastcall* OnRoomEnter_t)(void* roomInstance, void* player);
-OnRoomEnter_t oOnRoomEnter = nullptr;
-void __fastcall hkOnRoomEnter(void* roomInstance, void* player) {
-    if (roomInstance != nullptr) {
-        g_CurrentRoom = roomInstance;
-
-        std::lock_guard<std::mutex> lock(g_MapMutex);
-        g_LiveEnemies.clear();
-    }
-    return oOnRoomEnter(roomInstance, player);
-}
-
-typedef void(__fastcall* ActorUpdate_t)(void* instance);
-ActorUpdate_t original_ActorUpdate = nullptr;
-
-void __fastcall Hooked_ActorUpdate(void* instance) {
-    if (instance != nullptr) {
-        Vector3 currentPos = { 0,0,0 };
-        SafeGetPosition(instance, &currentPos);
-
-        if (currentPos.x != 0 || currentPos.y != 0) {
-            if (instance != g_LocalPlayer) {
-                std::lock_guard<std::mutex> lock(g_MapMutex);
-                g_LiveEnemies[instance] = currentPos;
+        for (size_t i = 0; i < size; i++) {
+            if (!assemblies[i] || !assemblies[i]->image) continue;
+            Il2CppClass* objClass = il2cpp_class_from_name(assemblies[i]->image, "UnityEngine", "Object");
+            if (objClass) {
+                getNameMethod = il2cpp_class_get_method_from_name(objClass, "get_name", 0);
+                if (getNameMethod) break;
             }
         }
     }
-    return original_ActorUpdate(instance);
-}
 
-typedef void(__fastcall* PlayerUpdate_t)(void* instance);
-PlayerUpdate_t oPlayerUpdate = nullptr;
-void __fastcall hkPlayerUpdate(void* instance) {
-    if (instance != nullptr) g_LocalPlayer = instance;
-    return oPlayerUpdate(instance);
-}
+    if (!getNameMethod) return;
 
-typedef void(__fastcall* UnityLog_t)(void* message);
-UnityLog_t oUnityLog = nullptr;
-void __fastcall hkUnityLog(void* message) {
-    if (message != nullptr) {
-        Il2CppString* unityStr = (Il2CppString*)message;
-        std::string logMsg = UseString(unityStr);
-        if (g_LogConsole.size() >= 100) g_LogConsole.erase(g_LogConsole.begin());
-        g_LogConsole.push_back(logMsg);
-		std::cout << logMsg << std::endl;
+    __try {
+        Il2CppString* strObj = (Il2CppString*)il2cpp_runtime_invoke(getNameMethod, obj, nullptr, nullptr);
+        if (strObj) {
+            int len = *(int*)((uintptr_t)strObj + 0x10);
+            if (len > 0 && len < (int)bufSize) {
+                wchar_t* chars = (wchar_t*)((uintptr_t)strObj + 0x14);
+                WideCharToMultiByte(CP_UTF8, 0, chars, len, outBuf, (int)bufSize, NULL, NULL);
+                outBuf[len] = '\0';
+            }
+        }
     }
-    return oUnityLog(message);
+    __except (1) {}
 }
-typedef void(__fastcall* InflictDamage_Struct_t)(void* instance, void* damageObj, void* inflictor);
-InflictDamage_Struct_t oInflictDamageStruct = nullptr;
-void __fastcall hkInflictDamageStruct(void* instance, void* damageObj, void* inflictor) {
-    if (g_GodMode && instance != nullptr && instance == g_LocalPlayer) return;
-    return oInflictDamageStruct(instance, damageObj, inflictor);
+
+std::string GetNameViaReflection(void* obj) {
+    char buf[256];
+    SafeGetNameViaReflection(obj, buf, sizeof(buf));
+
+    if (buf[0] == '\0') {
+        return "Unnamed Object";
+    }
+    return std::string(buf);
+}
+void SafeGetTagViaReflection(void* go, char* outBuf, size_t bufSize) {
+    outBuf[0] = '\0';
+    if (!go) return;
+
+    static const MethodInfo* getTagMethod = nullptr;
+
+    if (!getTagMethod) {
+        Il2CppDomain* domain = il2cpp_domain_get();
+        if (!domain) return;
+        size_t size = 0;
+        Il2CppAssembly** assemblies = il2cpp_domain_get_assemblies(domain, &size);
+        if (!assemblies) return;
+
+        for (size_t i = 0; i < size; i++) {
+            if (!assemblies[i] || !assemblies[i]->image) continue;
+            Il2CppClass* goClass = il2cpp_class_from_name(assemblies[i]->image, "UnityEngine", "GameObject");
+            if (goClass) {
+                getTagMethod = il2cpp_class_get_method_from_name(goClass, "get_tag", 0);
+                if (getTagMethod) break;
+            }
+        }
+    }
+
+    if (!getTagMethod) return;
+
+    __try {
+        Il2CppString* strObj = (Il2CppString*)il2cpp_runtime_invoke(getTagMethod, go, nullptr, nullptr);
+        if (strObj) {
+            int len = *(int*)((uintptr_t)strObj + 0x10);
+            if (len > 0 && len < (int)bufSize) {
+                wchar_t* chars = (wchar_t*)((uintptr_t)strObj + 0x14);
+                WideCharToMultiByte(CP_UTF8, 0, chars, len, outBuf, (int)bufSize, NULL, NULL);
+                outBuf[len] = '\0';
+            }
+        }
+    }
+    __except (1) {}
+}
+
+std::string GetTagViaReflection(void* go) {
+    char buf[128];
+    SafeGetTagViaReflection(go, buf, sizeof(buf));
+    if (buf[0] == '\0') return "Untagged";
+    return std::string(buf);
+}
+
+void SafeGetGameObjectViaReflection(void* component, void** outGameObject) {
+    *outGameObject = nullptr;
+    if (!component) return;
+
+    static const MethodInfo* getGOMethod = nullptr;
+
+    if (!getGOMethod) {
+        Il2CppDomain* domain = il2cpp_domain_get();
+        if (domain) {
+            size_t size = 0;
+            Il2CppAssembly** assemblies = il2cpp_domain_get_assemblies(domain, &size);
+            if (assemblies) {
+                for (size_t i = 0; i < size; i++) {
+                    if (!assemblies[i] || !assemblies[i]->image) continue;
+
+                    Il2CppClass* compClass = il2cpp_class_from_name(assemblies[i]->image, "UnityEngine", "Component");
+                    if (compClass) {
+                        getGOMethod = il2cpp_class_get_method_from_name(compClass, "get_gameObject", 0);
+                        if (getGOMethod) break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!getGOMethod) return;
+
+    __try {
+        *outGameObject = il2cpp_runtime_invoke(getGOMethod, component, nullptr, nullptr);
+    }
+    __except (1) {
+        Log("[CRASH PREVENTED] Error invoking get_gameObject!");
+    }
+}
+
+void* GetGameObjectViaReflection(void* component) {
+    void* gameObject = nullptr;
+    SafeGetGameObjectViaReflection(component, &gameObject);
+    return gameObject;
+}
+void SafeGetTransformViaReflection(void* go, void** outTransform) {
+    *outTransform = nullptr;
+    if (!go) return;
+
+    static const MethodInfo* getTransformMethod = nullptr;
+
+    if (!getTransformMethod) {
+        Il2CppDomain* domain = il2cpp_domain_get();
+        if (domain) {
+            size_t size = 0;
+            Il2CppAssembly** assemblies = il2cpp_domain_get_assemblies(domain, &size);
+            if (assemblies) {
+                for (size_t i = 0; i < size; i++) {
+                    if (!assemblies[i] || !assemblies[i]->image) continue;
+
+                    Il2CppClass* goClass = il2cpp_class_from_name(assemblies[i]->image, "UnityEngine", "GameObject");
+                    if (goClass) {
+                        getTransformMethod = il2cpp_class_get_method_from_name(goClass, "get_transform", 0);
+                        if (getTransformMethod) break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!getTransformMethod) return;
+
+    __try {
+        *outTransform = il2cpp_runtime_invoke(getTransformMethod, go, nullptr, nullptr);
+    }
+    __except (1) {
+        Log("[CRASH PREVENTED] Error invoking get_transform!");
+    }
+}
+
+void* GetTransformViaReflection(void* go) {
+    void* transform = nullptr;
+    SafeGetTransformViaReflection(go, &transform);
+    return transform;
+}
+void SafeGetPositionViaReflection(void* transform, Unity::Vector3* outPos) {
+    if (!transform || !outPos) return;
+
+    static const MethodInfo* getPositionMethod = nullptr;
+
+    if (!getPositionMethod) {
+        Il2CppDomain* domain = il2cpp_domain_get();
+        if (domain) {
+            size_t size = 0;
+            Il2CppAssembly** assemblies = il2cpp_domain_get_assemblies(domain, &size);
+            if (assemblies) {
+                for (size_t i = 0; i < size; i++) {
+                    if (!assemblies[i] || !assemblies[i]->image) continue;
+
+                    Il2CppClass* transformClass = il2cpp_class_from_name(assemblies[i]->image, "UnityEngine", "Transform");
+                    if (transformClass) {
+                        getPositionMethod = il2cpp_class_get_method_from_name(transformClass, "get_position", 0);
+                        if (getPositionMethod) break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!getPositionMethod) return;
+
+    __try {
+        void* boxedVec3 = il2cpp_runtime_invoke(getPositionMethod, transform, nullptr, nullptr);
+
+        if (boxedVec3) {
+            *outPos = *(Unity::Vector3*)((uintptr_t)boxedVec3 + 0x10);
+        }
+    }
+    __except (1) {
+    }
+}
+void* GetMainCameraSafe() {
+    static const MethodInfo* getMainCamMethod = nullptr;
+    if (!getMainCamMethod) {
+        Il2CppDomain* domain = il2cpp_domain_get();
+        if (domain) {
+            size_t size = 0;
+            Il2CppAssembly** assemblies = il2cpp_domain_get_assemblies(domain, &size);
+            if (assemblies) {
+                for (size_t i = 0; i < size; i++) {
+                    if (!assemblies[i] || !assemblies[i]->image) continue;
+                    Il2CppClass* camClass = il2cpp_class_from_name(assemblies[i]->image, "UnityEngine", "Camera");
+                    if (camClass) {
+                        getMainCamMethod = il2cpp_class_get_method_from_name(camClass, "get_main", 0);
+                        if (getMainCamMethod) break;
+                    }
+                }
+            }
+        }
+    }
+    if (!getMainCamMethod) return nullptr;
+
+    void* camera = nullptr;
+    __try { camera = il2cpp_runtime_invoke(getMainCamMethod, nullptr, nullptr, nullptr); }
+    __except (1) {}
+    return camera;
+}
+bool WorldToScreenSafe(void* camera, Unity::Vector3 worldPos, Unity::Vector3& outScreenPos) {
+    if (!camera) return false;
+
+    static const MethodInfo* w2sMethod = nullptr;
+
+    if (!w2sMethod) {
+        Log("WorldToScreenSafe: Resolving WorldToScreenPoint method...");
+
+        Il2CppDomain* domain = il2cpp_domain_get();
+        if (!domain) return false;
+
+        size_t size = 0;
+        Il2CppAssembly** assemblies = il2cpp_domain_get_assemblies(domain, &size);
+
+        if (!assemblies || size == 0) {
+            Log("[ERROR] Assemblies array is null or empty!");
+            return false;
+        }
+
+        Il2CppClass* camClass = nullptr;
+
+        for (size_t i = 0; i < size; i++) {
+            if (assemblies[i] && assemblies[i]->image) {
+                camClass = il2cpp_class_from_name(assemblies[i]->image, "UnityEngine", "Camera");
+                if (camClass) {
+                    Log("WorldToScreenSafe: Found Camera class!");
+                    break; 
+                }
+            }
+        }
+
+        if (camClass) {
+            w2sMethod = il2cpp_class_get_method_from_name(camClass, "WorldToScreenPoint", 1);
+            if (w2sMethod) {
+                Log("WorldToScreenSafe: Successfully resolved method!");
+            }
+        }
+    }
+
+    if (!w2sMethod) {
+        Log("[ERROR] Failed to resolve WorldToScreenPoint method!");
+        return false;
+    }
+
+    __try {
+        void* args[1] = { &worldPos };
+        void* result = il2cpp_runtime_invoke(w2sMethod, camera, args, nullptr);
+
+        if (result) {
+            outScreenPos = *(Unity::Vector3*)((uintptr_t)result + 0x10);
+            return true;
+        }
+    }
+    __except (1) {
+        Log("[CRASH PREVENTED] Error invoking WorldToScreenPoint!");
+    }
+
+    return false;
+}
+bool GetPositionFromGameObjectSafe(void* gameObject, Unity::Vector3& outPos) {
+    if (!IsValidPtr(gameObject)) return false;
+    if (!IsValidPtr((void*)((uintptr_t)gameObject + 0x10)) || *(void**)((uintptr_t)gameObject + 0x10) == nullptr) return false;
+
+    void* transform = GetTransformViaReflection(gameObject);
+    if (!IsValidPtr(transform)) return false;
+
+    SafeGetPositionViaReflection(transform, &outPos);
+
+    return true;
+}
+typedef Il2CppArray* (*t_FindObjectsOfType)(void* type);
+
+void RefreshLivingEntities(std::string unityType) {
+    auto start = std::chrono::high_resolution_clock::now();
+
+    g_Players.clear();
+    g_Enemies.clear();
+    g_Others.clear();
+    g_SelectedObject = nullptr;
+
+    if (il2cpp_thread_attach) il2cpp_thread_attach(il2cpp_domain_get());
+
+    void* typeObj = GetUnityType("Rigidbody2D");
+    if (!typeObj) { Log("[ERROR] Unity type not found!"); return; }
+
+    t_FindObjectsOfType findFunc = (t_FindObjectsOfType)il2cpp_resolve_icall("UnityEngine.Object::FindObjectsOfType");
+    if (!findFunc) {
+        Log("[ERROR] Failed to resolve icall: FindObjectsOfType");
+        return;
+    }
+
+    Il2CppArray* objects = findFunc(typeObj);
+    if (!IsValidPtr(objects)) {
+        Log("[ERROR] FindObjectsOfType returned null or an invalid pointer");
+        return;
+    }
+
+    uintptr_t baseAddr = (uintptr_t)objects;
+    if (!IsValidPtr((void*)(baseAddr + 0x18))) {
+		return;
+    }
+
+    uint32_t count = *(uint32_t*)(baseAddr + 0x18);
+    void** dataArray = (void**)(baseAddr + 0x20);
+
+    for (uint32_t i = 0; i < count; i++) {
+        if (!IsValidPtr(&dataArray[i])) {
+			break;
+        }
+
+        void* animatorComp = dataArray[i];
+        if (IsValidPtr(animatorComp) && IsValidPtr((void*)((uintptr_t)animatorComp + 0x10)) && *(void**)((uintptr_t)animatorComp + 0x10) != nullptr) {
+			void* go = GetGameObjectViaReflection(animatorComp);
+            if (!IsValidPtr(go)) continue;
+
+            std::string name = GetNameViaReflection(go);
+            std::string tag = GetTagViaReflection(go);
+            if (tag == "Player" || name.find("Player") != std::string::npos) {
+                g_Players.push_back(go);
+            }
+            else if (tag == "Enemy" || name.find("Enemy") != std::string::npos || name.find("Monster") != std::string::npos) {
+                g_Enemies.push_back(go);
+            }
+            else {
+                g_Others.push_back(go);
+            }
+
+            char logMsg[256];
+            sprintf_s(logMsg, "[ENTITY] %s | Tag: %s", name.c_str(), tag.c_str());
+            Log(logMsg);
+        }
+    }
+
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> ms = end - start;
+
+    char buf2[256];
+    sprintf_s(buf2, "[DEBUG] Entity scan completed in %.2f ms. Players: %zu | Enemies: %zu | Others: %zu",
+        ms.count(), g_Players.size(), g_Enemies.size(), g_Others.size());
+    Log(buf2);
+}
+void DrawLazyHierarchyNode(void* transform) {
+    if (!IsValidPtr(transform)) return;
+    if (!IsValidPtr((void*)((uintptr_t)transform + 0x10)) || *(void**)((uintptr_t)transform + 0x10) == nullptr) {
+        return;
+    }
+    void* go = GetGameObjectViaReflection(transform);
+    if (!IsValidPtr(go)) return;
+    std::string name = GetNameViaReflection(go);
+    if (name.empty()) name = "Unnamed Entity";
+
+    int childCount = Unity::GetChildCount(transform);
+
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+    if (childCount == 0) flags |= ImGuiTreeNodeFlags_Leaf;
+    if (g_SelectedObject == go) flags |= ImGuiTreeNodeFlags_Selected; 
+    bool isOpen = ImGui::TreeNodeEx(transform, flags, "%s", name.c_str());
+    if (ImGui::IsItemClicked()) {
+        g_SelectedObject = go;
+    }
+
+    if (isOpen) {
+        for (int i = 0; i < childCount; i++) {
+            void* childTransform = Unity::GetChild(transform, i);
+			std::string name = GetNameViaReflection(childTransform);
+
+            DrawLazyHierarchyNode(childTransform);
+        }
+        ImGui::TreePop();
+    }
+}
+
+void SafeDrawMainUI() {
+    if (!g_ShowMenu) return;
+
+    ImGui::SetNextWindowSize(ImVec2(800, 500), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Universal Aimbot/ESP Framework", &g_ShowMenu);
+
+    ImGui::BeginChild("EntityList", ImVec2(350, 0), true);
+
+    ImGui::Checkbox("Enable ESP Mode", &g_EnableESP);
+    ImGui::Spacing(); 
+    ImGui::InputText("Input Unity Type to scan (Default type: Rigidbody2D)", SearchUnityTypeValue, sizeof(SearchUnityTypeValue));
+    ImGui::Spacing();
+    if (ImGui::Button("Scan Entities", ImVec2(-1, 30))) {
+        RefreshLivingEntities(SearchUnityTypeValue);
+    }
+    ImGui::Separator();
+
+    auto DrawCategory = [](const char* title, const std::vector<void*>& entityList) {
+        if (!entityList.empty()) {
+            char headerTitle[128];
+            sprintf_s(headerTitle, "%s [%zu]", title, entityList.size());
+
+            if (ImGui::CollapsingHeader(headerTitle, ImGuiTreeNodeFlags_DefaultOpen)) {
+                for (void* go : entityList) {
+                    if (!IsValidPtr(go)) continue;
+
+                    if (!IsValidPtr((void*)((uintptr_t)go + 0x10)) || *(void**)((uintptr_t)go + 0x10) == nullptr) continue;
+                    void* transform = GetTransformViaReflection(go);
+
+                    if (IsValidPtr(transform)) {
+                        DrawLazyHierarchyNode(transform);
+                    }
+                }
+            }
+        }};
+
+    DrawCategory("Players", g_Players);
+    DrawCategory("Enemies", g_Enemies);
+    DrawCategory("Others (NPC, Pets...)", g_Others);
+
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+
+    ImGui::BeginChild("Inspector", ImVec2(0, 0), true);
+    if (g_SelectedObject && IsValidPtr(g_SelectedObject) &&
+        IsValidPtr((void*)((uintptr_t)g_SelectedObject + 0x10)) && *(void**)((uintptr_t)g_SelectedObject + 0x10) != nullptr)
+    {
+        std::string objName = GetNameViaReflection(g_SelectedObject);
+        std::string objTag = GetTagViaReflection(g_SelectedObject);
+
+        ImGui::TextColored(ImVec4(0, 1, 0, 1), "[ %s ]", objName.c_str());
+        ImGui::TextDisabled("GameObject: 0x%p | Tag: %s", g_SelectedObject, objTag.c_str());
+        ImGui::Separator();
+
+        void* transform = GetTransformViaReflection(g_SelectedObject); 
+        if (IsValidPtr(transform)) {
+            Unity::Vector3 pos;
+            if (GetPositionFromGameObjectSafe(g_SelectedObject, pos)) {
+                ImGui::Text("Position (X, Y, Z)");
+                ImGui::InputFloat3("##pos", &pos.x, "%.3f", ImGuiInputTextFlags_ReadOnly);
+            }
+        }
+    }
+    else {
+        ImGui::TextDisabled("Select an entity to inspect.");
+    }
+    ImGui::EndChild();
+
+    ImGui::End();
+}
+void DrawESP() {
+    if (!g_EnableESP) return; 
+    Log("DrawESP");
+    if (g_Others.empty()) return;
+    Log("g_Others not empty");
+    void* mainCamera = GetMainCameraSafe();
+    if (!mainCamera) return;
+    Log("Get Main Camera success");
+
+    ImDrawList* drawList = ImGui::GetBackgroundDrawList();
+    ImVec2 screenSize = ImGui::GetIO().DisplaySize;
+
+    for (void* enemy : g_Others) {
+        if (!IsValidPtr(enemy)) continue;
+        Unity::Vector3 worldPos;
+        if (GetPositionFromGameObjectSafe(enemy, worldPos)) {
+			Log("Got world position");
+            Unity::Vector3 screenPos;
+            if (WorldToScreenSafe(mainCamera, worldPos, screenPos)) {
+				Log("World to screen success");
+                if (screenPos.z > 0) {
+					Log("Enemy is in front of camera");
+                    float realY = screenSize.y - screenPos.y;
+
+                    drawList->AddCircleFilled(ImVec2(screenPos.x, realY), 5.0f, IM_COL32(255, 0, 0, 255));
+
+                    drawList->AddLine(ImVec2(screenSize.x / 2, screenSize.y), ImVec2(screenPos.x, realY), IM_COL32(255, 0, 0, 150), 1.5f);
+
+                    std::string name = GetNameViaReflection(enemy);
+                    drawList->AddText(ImVec2(screenPos.x + 8, realY - 8), IM_COL32(255, 255, 255, 255), name.c_str());
+                }
+            }
+        }
+    }
+}
+void DrawMainUI() {
+    __try {
+        DrawESP();
+    }
+    __except (1) {}
+
+    __try {
+        SafeDrawMainUI();
+    }
+    __except (1) {}
+}
+
+extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    if (uMsg == WM_KEYDOWN && wParam == VK_F1) {
+        g_ShowMenu = !g_ShowMenu;
+        return 0;
+    }
+
+    if (g_ShowMenu) {
+        ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam);
+        if (uMsg == WM_LBUTTONDOWN || uMsg == WM_LBUTTONUP ||
+            uMsg == WM_RBUTTONDOWN || uMsg == WM_RBUTTONUP ||
+            uMsg == WM_MOUSEWHEEL || uMsg == WM_MOUSEMOVE) {
+            return true;
+        }
+    }
+
+    return CallWindowProc(oWndProc, hWnd, uMsg, wParam, lParam);
 }
 
 typedef HRESULT(__stdcall* ResizeBuffers_t)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
 ResizeBuffers_t oResizeBuffers = nullptr;
+
 HRESULT __stdcall hkResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
     if (mainRenderTargetView) {
         pContext->OMSetRenderTargets(0, 0, 0);
@@ -243,41 +628,10 @@ HRESULT __stdcall hkResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, 
     }
     return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
 }
-typedef void(__fastcall* FixedUpdate_t)(void* instance);
-FixedUpdate_t original_FixedUpdate = nullptr;
-void __fastcall Hooked_FixedUpdate(void* instance) {
-    if (instance != nullptr) {
-        if (g_SpeedMultiplier != 1.0f) {
-            float* pSpeedX = (float*)((uintptr_t)instance + OFF_SPEED_X);
-            if (*pSpeedX > 0.01f) *pSpeedX = 5.0f * g_SpeedMultiplier;
-            else if (*pSpeedX < -0.01f) *pSpeedX = -5.0f * g_SpeedMultiplier;
-        }
-        if (g_FlyMode) {
-            float* pGravity = (float*)((uintptr_t)instance + OFF_GRAVITY);
-            float* pSpeedY = (float*)((uintptr_t)instance + OFF_SPEED_Y);
-            *pGravity = 0.0f;
-            if (GetAsyncKeyState(VK_SPACE) & 0x8000) *pSpeedY = g_FlySpeed;
-            else *pSpeedY = 0.0f;
-        }
-    }
-    return original_FixedUpdate(instance);
-}
-extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    if (uMsg == WM_KEYDOWN && wParam == VK_F1) {
-        g_ShowMenu = !g_ShowMenu;
-        ImGui::GetIO().MouseDrawCursor = g_ShowMenu;
-        return 0;
-    }
-    if (g_ShowMenu) {
-        ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam);
-        return true;
-    }
-    return CallWindowProc(oWndProc, hWnd, uMsg, wParam, lParam);
-}
 
 typedef HRESULT(__stdcall* Present_t)(IDXGISwapChain*, UINT, UINT);
 Present_t oPresent = nullptr;
+
 HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
     if (!initImgui) {
         if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)&pDevice))) {
@@ -290,15 +644,22 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             pDevice->CreateRenderTargetView(pBackBuffer, NULL, &mainRenderTargetView);
             pBackBuffer->Release();
             oWndProc = (WNDPROC)SetWindowLongPtr(window, GWLP_WNDPROC, (LONG_PTR)WndProc);
+
+            SetupIL2CPP();
+            Unity::Init();
+
             ImGui::CreateContext();
             ImGuiIO& io = ImGui::GetIO();
-            io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+            io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
+
             ImGui::StyleColorsDark();
             ImGui_ImplWin32_Init(window);
             ImGui_ImplDX11_Init(pDevice, pContext);
             initImgui = true;
         }
-        else return oPresent(pSwapChain, SyncInterval, Flags);
+        else {
+            return oPresent(pSwapChain, SyncInterval, Flags);
+        }
     }
 
     if (mainRenderTargetView == NULL) {
@@ -312,36 +673,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    if (g_EnableESP) {
-        DrawEnemyESP();
-    }
+    ImGui::GetIO().MouseDrawCursor = g_ShowMenu;
 
-    if (g_ShowMenu) {
-        ImGui::GetIO().MouseDrawCursor = true;
-        ImGui::SetNextWindowSize(ImVec2(400, 300), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Game Inspector - MUTEX + ACTOR HOOK", &g_ShowMenu);
-        ImGui::Text("Hooking: ActorBase::Update (All Enemies)");
-        ImGui::Separator();
-        ImGui::Checkbox("Enable Fly Mode", &g_FlyMode);
-        if (g_FlyMode) ImGui::SliderFloat("Fly Power", &g_FlySpeed, 5.0f, 50.0f);
-        ImGui::Checkbox("Enable God Mode", &g_GodMode);
-        ImGui::Separator();
-        ImGui::Checkbox("Enable ESP", &g_EnableESP);
-        if (g_EnableESP) {
-            ImGui::SliderFloat("Box Height", &g_ESP_Height, 0.5f, 5.0f);
-            ImGui::SliderFloat("Box Width", &g_ESP_Width, 0.1f, 3.0f);
-        }
-        ImGui::Text("Tracking Count: %d", g_LiveEnemies.size());
-        ImGui::Separator();
-        if (ImGui::Button("Clear Console")) g_LogConsole.clear();
-        ImGui::BeginChild("LogRegion", ImVec2(0, 100), true);
-        for (const auto& log : g_LogConsole) ImGui::TextUnformatted(log.c_str());
-        ImGui::EndChild();
-        ImGui::End();
-    }
-    else {
-        ImGui::GetIO().MouseDrawCursor = false;
-    }
+    DrawMainUI();
 
     ImGui::Render();
     pContext->OMSetRenderTargets(1, &mainRenderTargetView, NULL);
@@ -350,91 +684,47 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     return oPresent(pSwapChain, SyncInterval, Flags);
 }
 
-std::vector<int> PatternToByte(const char* pattern) {
-    std::vector<int> bytes;
-    char* start = const_cast<char*>(pattern);
-    char* end = const_cast<char*>(pattern) + strlen(pattern);
-    for (char* current = start; current < end; ++current) {
-        if (*current == '?') { ++current; if (*current == '?') ++current; bytes.push_back(-1); }
-        else { bytes.push_back(strtoul(current, &current, 16)); }
-    }
-    return bytes;
-}
-
-uintptr_t FindPattern(HMODULE hModule, const char* pattern) {
-    MODULEINFO modInfo;
-    GetModuleInformation(GetCurrentProcess(), hModule, &modInfo, sizeof(MODULEINFO));
-    uintptr_t startAddress = (uintptr_t)modInfo.lpBaseOfDll;
-    size_t size = modInfo.SizeOfImage;
-    std::vector<int> patternBytes = PatternToByte(pattern);
-    uintptr_t patternLength = patternBytes.size();
-    int* patternData = patternBytes.data();
-    for (uintptr_t i = 0; i < size - patternLength; ++i) {
-        bool found = true;
-        for (uintptr_t j = 0; j < patternLength; ++j) {
-            unsigned char byte = *(unsigned char*)(startAddress + i + j);
-            if (patternData[j] != -1 && patternData[j] != byte) { found = false; break; }
-        }
-        if (found) return startAddress + i;
-    }
-    return 0;
-}
-
 DWORD WINAPI InitThread(LPVOID lpParam) {
-    AllocConsole(); FILE* fDummy; freopen_s(&fDummy, "CONOUT$", "w", stdout);
+    CreateDebugConsole();
+    Log("[+] Console khoi tao thanh cong!");
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, DefWindowProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, L"DX11 Dummy", NULL };
     RegisterClassEx(&wc);
     HWND hWnd = CreateWindow(L"DX11 Dummy", NULL, WS_OVERLAPPEDWINDOW, 100, 100, 300, 300, NULL, NULL, wc.hInstance, NULL);
-    D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_0 }; D3D_FEATURE_LEVEL obtained;
-    ID3D11Device* d3dDevice = nullptr; ID3D11DeviceContext* d3dContext = nullptr; IDXGISwapChain* d3dSwapChain = nullptr;
-    DXGI_SWAP_CHAIN_DESC scd; ZeroMemory(&scd, sizeof(scd));
-    scd.BufferCount = 1; scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    scd.OutputWindow = hWnd; scd.SampleDesc.Count = 1; scd.Windowed = TRUE; scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_0 };
+    D3D_FEATURE_LEVEL obtained;
+    ID3D11Device* d3dDevice = nullptr;
+    ID3D11DeviceContext* d3dContext = nullptr;
+    IDXGISwapChain* d3dSwapChain = nullptr;
+    DXGI_SWAP_CHAIN_DESC scd;
+    ZeroMemory(&scd, sizeof(scd));
+    scd.BufferCount = 1;
+    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.OutputWindow = hWnd;
+    scd.SampleDesc.Count = 1;
+    scd.Windowed = TRUE;
+    scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+
     D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, levels, 1, D3D11_SDK_VERSION, &scd, &d3dSwapChain, &d3dDevice, &obtained, &d3dContext);
-    DWORD_PTR* pVTable = (DWORD_PTR*)d3dSwapChain; pVTable = (DWORD_PTR*)pVTable[0];
-    void* presentAddr = (void*)pVTable[8]; void* resizeAddr = (void*)pVTable[13];
-    d3dSwapChain->Release(); d3dDevice->Release(); d3dContext->Release(); DestroyWindow(hWnd);
 
-    HMODULE hGameAssembly = GetModuleHandleA("GameAssembly.dll");
-    while (!hGameAssembly) { Sleep(100); hGameAssembly = GetModuleHandleA("GameAssembly.dll"); }
-    uintptr_t baseAddr = (uintptr_t)hGameAssembly;
+    DWORD_PTR* pVTable = (DWORD_PTR*)d3dSwapChain;
+    pVTable = (DWORD_PTR*)pVTable[0];
+    void* presentAddr = (void*)pVTable[8];
+    void* resizeAddr = (void*)pVTable[13];
 
-    void* addrPlayerUpdate = (void*)(baseAddr + 0x321C10);
-    void* addrInflictDamage = (void*)(baseAddr + 0x28A8D0);
-    void* addrUnityLog = (void*)(baseAddr + 0x11FBBA0);
-    void* addrRoomEnter = (void*)(baseAddr + 0x2AB8E0);
-
-    void* addrActorUpdate = (void*)(baseAddr + RVA_ACTOR_UPDATE);
-
-    Call_GetGameObject = (GetGameObject_t)(baseAddr + 0x12376E0);
-    Call_GetName = (GetName_t)(baseAddr + 0x12427A0);
-    fnGetTransform = (GetTransform_t)(baseAddr + 0x1237620);
-    fnGetMainCamera = (GetMainCamera_t)(baseAddr + 0x11F8250);
-    fnWorldToScreen = (WorldToScreen_t)(baseAddr + 0x11F7BA0);
-
-    fnGetPosition_Injected = (GetPos_Injected_t)(baseAddr + 0x124F570);
-
-    const char* fixedUpdateSig = "40 53 48 81 EC C0 00 00 00 80 3D 4A 7F AD 01 00";
-    uintptr_t foundAddr = FindPattern(hGameAssembly, fixedUpdateSig);
+    d3dSwapChain->Release();
+    d3dDevice->Release();
+    d3dContext->Release();
+    DestroyWindow(hWnd);
 
     MH_Initialize();
-    if (foundAddr != 0) MH_CreateHook((void*)foundAddr, &Hooked_FixedUpdate, (LPVOID*)&original_FixedUpdate);
-
-    MH_CreateHook(addrActorUpdate, &Hooked_ActorUpdate, (LPVOID*)&original_ActorUpdate);
-
-    MH_CreateHook(addrRoomEnter, &hkOnRoomEnter, (LPVOID*)&oOnRoomEnter);
-    MH_CreateHook(addrUnityLog, &hkUnityLog, (LPVOID*)&oUnityLog);
-    MH_CreateHook(addrInflictDamage, &hkInflictDamageStruct, (LPVOID*)&oInflictDamageStruct);
     MH_CreateHook(resizeAddr, &hkResizeBuffers, (LPVOID*)&oResizeBuffers);
     MH_CreateHook(presentAddr, &hkPresent, (LPVOID*)&oPresent);
-    MH_CreateHook(addrPlayerUpdate, &hkPlayerUpdate, (LPVOID*)&oPlayerUpdate);
-
     MH_EnableHook(MH_ALL_HOOKS);
     return 0;
 }
 
 BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
-	//Refactor code and add new feture in other branches
     if (dwReason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
         CreateThread(NULL, 0, InitThread, NULL, 0, NULL);
