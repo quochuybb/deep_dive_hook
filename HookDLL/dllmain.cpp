@@ -389,7 +389,7 @@ void RefreshLivingEntities(std::string unityType) {
 
     if (il2cpp_thread_attach) il2cpp_thread_attach(il2cpp_domain_get());
 
-    void* typeObj = GetUnityType("Rigidbody2D");
+    void* typeObj = GetUnityType(SearchUnityTypeValue);
     if (!typeObj) { Log("[ERROR] Unity type not found!"); return; }
 
     t_FindObjectsOfType findFunc = (t_FindObjectsOfType)il2cpp_resolve_icall("UnityEngine.Object::FindObjectsOfType");
