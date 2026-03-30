@@ -71,6 +71,7 @@ void* GetUnityType(const char* typeName) {
     }
     return nullptr;
 }
+
 void SafeGetNameViaReflection(void* obj, char* outBuf, size_t bufSize) {
     outBuf[0] = '\0'; 
     if (!obj) return;
@@ -366,6 +367,7 @@ bool WorldToScreenSafe(void* camera, Unity::Vector3 worldPos, Unity::Vector3& ou
 
     return false;
 }
+
 bool GetPositionFromGameObjectSafe(void* gameObject, Unity::Vector3& outPos) {
     if (!IsValidPtr(gameObject)) return false;
     if (!IsValidPtr((void*)((uintptr_t)gameObject + 0x10)) || *(void**)((uintptr_t)gameObject + 0x10) == nullptr) return false;
@@ -378,7 +380,192 @@ bool GetPositionFromGameObjectSafe(void* gameObject, Unity::Vector3& outPos) {
     return true;
 }
 typedef Il2CppArray* (*t_FindObjectsOfType)(void* type);
+// --- HÀM KHIÊN CHẮN (BẮT BUỘC PHẢI NẰM TRÊN CÙNG) ---
+void* SafeInvoke(const MethodInfo* method, void* obj, void** args, Il2CppException** exc) {
+    __try {
+        return il2cpp_runtime_invoke(method, obj, args, exc);
+    }
+    __except (1) {
+        return nullptr; // Bắt Crash thành công
+    }
+}
+// ---------------------------------------------------
 
+std::vector<void*> GetAllComponents(void* go) {
+    std::vector<void*> results;
+    Log("[Debug] Bat dau chay GetAllComponents...");
+
+    if (!go) return results;
+
+    if (il2cpp_thread_attach) il2cpp_thread_attach(il2cpp_domain_get());
+
+    static const MethodInfo* internalMethod = nullptr;
+    static Il2CppClass* compClass = nullptr;
+
+    // 1. DÙNG DEEP SCAN ĐỂ TÌM METHOD VÀ CLASS (Giống hệt Radar lúc nãy)
+    if (!internalMethod || !compClass) {
+        Log("[1] Dang Deep Scan tim UnityEngine.GameObject va UnityEngine.Component...");
+
+        Il2CppDomain* domain = il2cpp_domain_get();
+        size_t assemblyCount = 0;
+        Il2CppAssembly** assemblies = il2cpp_domain_get_assemblies(domain, &assemblyCount);
+
+        for (size_t i = 0; i < assemblyCount; i++) {
+            if (!assemblies[i] || !assemblies[i]->image) continue;
+
+            // Tìm class Component
+            if (!compClass) {
+                compClass = il2cpp_class_from_name(assemblies[i]->image, "UnityEngine", "Component");
+            }
+
+            // Tìm class GameObject và hàm GetComponentsInternal
+            if (!internalMethod) {
+                Il2CppClass* goClass = il2cpp_class_from_name(assemblies[i]->image, "UnityEngine", "GameObject");
+                if (goClass) {
+                    void* iter = nullptr;
+                    const MethodInfo* m = nullptr;
+                    while ((m = il2cpp_class_get_methods(goClass, &iter)) != nullptr) {
+                        if (strcmp(il2cpp_method_get_name(m), "GetComponentsInternal") == 0 && il2cpp_method_get_param_count(m) == 6) {
+                            internalMethod = m;
+                            Log("[+] DA TIM THAY GetComponentsInternal (6 tham so)!");
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Nếu tìm thấy cả 2 thì dừng vòng lặp cho nhẹ máy
+            if (internalMethod && compClass) break;
+        }
+    }
+
+    if (!internalMethod) {
+        Log("[-] THAT BAI: Deep Scan van khong tim thay ham internalMethod!");
+        return results;
+    }
+    if (!compClass) {
+        Log("[-] THAT BAI: Khong tim thay class Component!");
+        return results;
+    }
+
+    Log("[2] Dang lay System.Type cho Component...");
+    void* typeObj = il2cpp_type_get_object(il2cpp_class_get_type(compClass));
+    if (!typeObj) {
+        Log("[-] THAT BAI: typeObj bi NULL.");
+        return results;
+    }
+
+    Log("[3] Dang set tham so va Invoke...");
+    bool p1 = true;  // Yêu cầu trả về mảng (Array)
+    bool p2 = false;
+    bool p3 = true;
+    bool p4 = false;
+
+    // Bóp cò: Truyền nullptr vào tham số cuối cùng
+    void* args[6] = { typeObj, &p1, &p2, &p3, &p4, nullptr };
+    Il2CppException* exc = nullptr;
+
+    Il2CppArray* resultArray = (Il2CppArray*)SafeInvoke(internalMethod, go, args, &exc);
+
+    if (exc) {
+        Log("[-] THAT BAI: Xay ra Exception tu C# khi Invoke!");
+        return results;
+    }
+
+    if (!resultArray) {
+        Log("[-] THAT BAI: resultArray tra ve tu Unity la NULL. (Unity tu choi tao mang)");
+        return results;
+    }
+
+    char msg[256];
+    sprintf_s(msg, "[4] Invoke thanh cong! Array max_length: %d", resultArray->max_length);
+    Log(msg);
+
+    // 4. Bóc tách Array sang std::vector
+    if (resultArray->max_length > 0) {
+        void** elements = (void**)((uintptr_t)resultArray + 0x20);
+        int validCount = 0;
+        for (uint32_t i = 0; i < resultArray->max_length; i++) {
+            if (elements[i] != nullptr) {
+                results.push_back(elements[i]);
+                validCount++;
+            }
+        }
+        char msg2[256];
+        sprintf_s(msg2, "[+] Hoan thanh. Da trich xuat duoc %d Components hop le.", validCount);
+        Log(msg2);
+    }
+    else {
+        Log("[-] CANH BAO: Array rong, quai vat nay khong co Component nao.");
+    }
+
+    return results;
+}
+void DrawComponentInspector(void* component) {
+	Log("Drawing inspector for component...");
+    if (!component) return;
+
+    // Lấy Class của Component này để biết nó tên gì (vd: PlayerHealth)
+    Il2CppClass* klass = il2cpp_object_get_class((Il2CppObject*)component);
+    const char* className = il2cpp_class_get_name(klass);
+
+    // Dùng CollapsingHeader để UI gọn gàng, bấm vào mới xổ ra
+    if (ImGui::CollapsingHeader(className)) {
+        ImGui::Indent(); // Thụt lề vào cho đẹp
+
+        void* iter = nullptr;
+        FieldInfo* field = nullptr;
+
+        // Quét toàn bộ các biến (Fields) nằm trong Component này
+        while ((field = il2cpp_class_get_fields(klass, &iter)) != nullptr) {
+            const char* fieldName = il2cpp_field_get_name(field);
+
+            // Lấy kiểu dữ liệu của biến
+            const Il2CppType* type = il2cpp_field_get_type(field);
+            Il2CppClass* fieldClass = il2cpp_class_from_type(type);
+            const char* typeName = il2cpp_class_get_name(fieldClass);
+
+            // Bỏ qua các biến static (chỉ vẽ biến của object hiện tại)
+            // (Tuỳ chọn: nếu bộ resolver có hàm check static)
+
+            // Dùng ImGui PushID để tránh việc các nút trùng tên bị dính vào nhau
+            ImGui::PushID(fieldName);
+
+            // --- KIỂM TRA & VẼ GIAO DIỆN TƯƠNG ỨNG ---
+
+            if (strcmp(typeName, "Int32") == 0) {
+                int val;
+                il2cpp_field_get_value((Il2CppObject*)component, field, &val);
+                if (ImGui::InputInt(fieldName, &val)) {
+                    il2cpp_field_set_value((Il2CppObject*)component, field, &val);
+                }
+            }
+            else if (strcmp(typeName, "Single") == 0) { // Float trong C# gọi là Single
+                float val;
+                il2cpp_field_get_value((Il2CppObject*)component, field, &val);
+                if (ImGui::InputFloat(fieldName, &val, 0.1f, 1.0f, "%.3f")) {
+                    il2cpp_field_set_value((Il2CppObject*)component, field, &val);
+                }
+            }
+            else if (strcmp(typeName, "Boolean") == 0) {
+                bool val;
+                il2cpp_field_get_value((Il2CppObject*)component, field, &val);
+                if (ImGui::Checkbox(fieldName, &val)) {
+                    il2cpp_field_set_value((Il2CppObject*)component, field, &val);
+                }
+            }
+            // (Nếu muốn, bạn có thể thêm logic cho String, Vector3 ở đây)
+            else {
+                // Với các kiểu phức tạp, ta chỉ in tên ra để biết
+                ImGui::TextDisabled("%s (%s)", fieldName, typeName);
+            }
+
+            ImGui::PopID();
+        }
+
+        ImGui::Unindent();
+    }
+}
 void RefreshLivingEntities(std::string unityType) {
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -533,8 +720,8 @@ void SafeDrawMainUI() {
         ImGui::TextColored(ImVec4(0, 1, 0, 1), "[ %s ]", objName.c_str());
         ImGui::TextDisabled("GameObject: 0x%p | Tag: %s", g_SelectedObject, objTag.c_str());
         ImGui::Separator();
-
-        void* transform = GetTransformViaReflection(g_SelectedObject); 
+        
+        void* transform = GetTransformViaReflection(g_SelectedObject);
         if (IsValidPtr(transform)) {
             Unity::Vector3 pos;
             if (GetPositionFromGameObjectSafe(g_SelectedObject, pos)) {
@@ -542,10 +729,24 @@ void SafeDrawMainUI() {
                 ImGui::InputFloat3("##pos", &pos.x, "%.3f", ImGuiInputTextFlags_ReadOnly);
             }
         }
+        std::vector<void*> components = GetAllComponents(g_SelectedObject);
+
+        if (!components.empty()) {
+            ImGui::Text("Tim thay %zu Components:", components.size());
+            ImGui::Separator();
+
+            for (void* comp : components) {
+                DrawComponentInspector(comp);
+            }
+        }
+        else {
+            ImGui::TextColored(ImVec4(1, 0, 0, 1), "Dang cho GameObject...");
+        }
     }
     else {
         ImGui::TextDisabled("Select an entity to inspect.");
     }
+
     ImGui::EndChild();
 
     ImGui::End();

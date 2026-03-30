@@ -18,6 +18,18 @@ t_il2cpp_thread_attach il2cpp_thread_attach = nullptr;
 t_il2cpp_class_get_method_from_name il2cpp_class_get_method_from_name = nullptr;
 t_il2cpp_runtime_invoke il2cpp_runtime_invoke = nullptr;
 t_il2cpp_object_unbox il2cpp_object_unbox = nullptr;
+t_il2cpp_class_get_methods il2cpp_class_get_methods = nullptr;
+t_il2cpp_method_get_name il2cpp_method_get_name = nullptr;
+t_il2cpp_method_get_param_count il2cpp_method_get_param_count = nullptr;
+t_il2cpp_field_get_flags il2cpp_field_get_flags = nullptr;
+t_il2cpp_type_get_type il2cpp_type_get_type = nullptr;
+t_il2cpp_format_exception il2cpp_format_exception = nullptr;
+t_il2cpp_method_get_return_type il2cpp_method_get_return_type = nullptr;
+t_il2cpp_method_get_param il2cpp_method_get_param = nullptr;
+t_il2cpp_class_from_type il2cpp_class_from_type = nullptr;
+t_il2cpp_object_new il2cpp_object_new = nullptr;
+t_il2cpp_class_get_field_from_name il2cpp_class_get_field_from_name = nullptr;
+t_il2cpp_image_get_name il2cpp_image_get_name = nullptr;
 
 void SetupIL2CPP() {
     HMODULE hGameAssembly = GetModuleHandleA("GameAssembly.dll");
@@ -40,4 +52,16 @@ void SetupIL2CPP() {
     il2cpp_class_get_method_from_name = (t_il2cpp_class_get_method_from_name)GetProcAddress(hGameAssembly, "il2cpp_class_get_method_from_name");
     il2cpp_runtime_invoke = (t_il2cpp_runtime_invoke)GetProcAddress(hGameAssembly, "il2cpp_runtime_invoke");
     il2cpp_object_unbox = (t_il2cpp_object_unbox)GetProcAddress(hGameAssembly, "il2cpp_object_unbox");
+    il2cpp_class_get_methods = (t_il2cpp_class_get_methods)GetProcAddress(hGameAssembly, "il2cpp_class_get_methods");
+	il2cpp_method_get_name = (t_il2cpp_method_get_name)GetProcAddress(hGameAssembly, "il2cpp_method_get_name");
+	il2cpp_method_get_param_count = (t_il2cpp_method_get_param_count)GetProcAddress(hGameAssembly, "il2cpp_method_get_param_count");
+	il2cpp_field_get_flags = (t_il2cpp_field_get_flags)GetProcAddress(hGameAssembly, "il2cpp_field_get_flags");
+	il2cpp_type_get_type = (t_il2cpp_type_get_type)GetProcAddress(hGameAssembly, "il2cpp_type_get_type");
+	il2cpp_format_exception = (t_il2cpp_format_exception)GetProcAddress(hGameAssembly, "il2cpp_format_exception");
+    il2cpp_method_get_return_type = (t_il2cpp_method_get_return_type)GetProcAddress(hGameAssembly, "il2cpp_method_get_return_type");
+	il2cpp_method_get_param = (t_il2cpp_method_get_param)GetProcAddress(hGameAssembly, "il2cpp_method_get_param");
+	il2cpp_class_from_type = (t_il2cpp_class_from_type)GetProcAddress(hGameAssembly, "il2cpp_class_from_type");
+	il2cpp_object_new = (t_il2cpp_object_new)GetProcAddress(hGameAssembly, "il2cpp_object_new");
+	il2cpp_class_get_field_from_name = (t_il2cpp_class_get_field_from_name)GetProcAddress(hGameAssembly, "il2cpp_class_get_field_from_name");
+    il2cpp_image_get_name = (t_il2cpp_image_get_name)GetProcAddress(hGameAssembly, "il2cpp_image_get_name");
 }
