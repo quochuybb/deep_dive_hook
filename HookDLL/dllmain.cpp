@@ -8,8 +8,6 @@
 #include <map>
 #include "MinHook.h"
 #include "IL2CPP_Resolver.h" 
-#include "UnityAPI.h"        
-
 #include "ImGui/imgui.h"
 #include "ImGui/imgui_impl_win32.h"
 #include "ImGui/imgui_impl_dx11.h"
@@ -18,6 +16,7 @@
 std::vector<void*> g_Players;
 std::vector<void*> g_Enemies;
 std::vector<void*> g_Others;
+struct Vector3 { float x, y, z; };
 void CreateDebugConsole() {
     AllocConsole();
     FILE* fDummy;
@@ -246,7 +245,7 @@ void* GetTransformViaReflection(void* go) {
     SafeGetTransformViaReflection(go, &transform);
     return transform;
 }
-void SafeGetPositionViaReflection(void* transform, Unity::Vector3* outPos) {
+void SafeGetPositionViaReflection(void* transform, Vector3* outPos) {
     if (!transform || !outPos) return;
 
     static const MethodInfo* getPositionMethod = nullptr;
@@ -276,7 +275,7 @@ void SafeGetPositionViaReflection(void* transform, Unity::Vector3* outPos) {
         void* boxedVec3 = il2cpp_runtime_invoke(getPositionMethod, transform, nullptr, nullptr);
 
         if (boxedVec3) {
-            *outPos = *(Unity::Vector3*)((uintptr_t)boxedVec3 + 0x10);
+            *outPos = *(Vector3*)((uintptr_t)boxedVec3 + 0x10);
         }
     }
     __except (1) {
@@ -308,7 +307,7 @@ void* GetMainCameraSafe() {
     __except (1) {}
     return camera;
 }
-bool WorldToScreenSafe(void* camera, Unity::Vector3 worldPos, Unity::Vector3& outScreenPos) {
+bool WorldToScreenSafe(void* camera, Vector3 worldPos, Vector3& outScreenPos) {
     if (!camera) return false;
 
     static const MethodInfo* w2sMethod = nullptr;
@@ -350,7 +349,7 @@ bool WorldToScreenSafe(void* camera, Unity::Vector3 worldPos, Unity::Vector3& ou
         void* result = il2cpp_runtime_invoke(w2sMethod, camera, args, nullptr);
 
         if (result) {
-            outScreenPos = *(Unity::Vector3*)((uintptr_t)result + 0x10);
+            outScreenPos = *(Vector3*)((uintptr_t)result + 0x10);
             return true;
         }
     }
@@ -361,7 +360,7 @@ bool WorldToScreenSafe(void* camera, Unity::Vector3 worldPos, Unity::Vector3& ou
     return false;
 }
 
-bool GetPositionFromGameObjectSafe(void* gameObject, Unity::Vector3& outPos) {
+bool GetPositionFromGameObjectSafe(void* gameObject, Vector3& outPos) {
     if (!IsValidPtr(gameObject)) return false;
     if (!IsValidPtr((void*)((uintptr_t)gameObject + 0x10)) || *(void**)((uintptr_t)gameObject + 0x10) == nullptr) return false;
 
@@ -663,7 +662,7 @@ void SafeDrawMainUI() {
         
         void* transform = GetTransformViaReflection(g_SelectedObject);
         if (IsValidPtr(transform)) {
-            Unity::Vector3 pos;
+            Vector3 pos;
             if (GetPositionFromGameObjectSafe(g_SelectedObject, pos)) {
                 ImGui::Text("Position (X, Y, Z)");
                 ImGui::InputFloat3("##pos", &pos.x, "%.3f", ImGuiInputTextFlags_ReadOnly);
@@ -702,9 +701,9 @@ void DrawESP() {
 
     for (void* enemy : g_Others) {
         if (!IsValidPtr(enemy)) continue;
-        Unity::Vector3 worldPos;
+        Vector3 worldPos;
         if (GetPositionFromGameObjectSafe(enemy, worldPos)) {
-            Unity::Vector3 screenPos;
+            Vector3 screenPos;
             if (WorldToScreenSafe(mainCamera, worldPos, screenPos)) {
                 if (screenPos.z > 0) {
                     float realY = screenSize.y - screenPos.y;
@@ -781,7 +780,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             oWndProc = (WNDPROC)SetWindowLongPtr(window, GWLP_WNDPROC, (LONG_PTR)WndProc);
 
             SetupIL2CPP();
-            Unity::Init();
 
             ImGui::CreateContext();
             ImGuiIO& io = ImGui::GetIO();
