@@ -464,6 +464,237 @@ std::vector<void*> GetAllComponents(void* go) {
 
     return results;
 }
+
+void DrawObjectFields(void* baseAddr, Il2CppClass* klass, int depth, bool isValueType);
+
+void DrawFieldEditor(void* baseAddr, FieldInfo* field, int depth, bool isValueType){
+    const char* fieldName = il2cpp_field_get_name(field);
+    const Il2CppType* type = il2cpp_field_get_type(field);
+    int typeEnum = il2cpp_type_get_type(type);
+    Il2CppClass* fieldClass = il2cpp_class_from_type(type);
+    const char* typeName = fieldClass ? il2cpp_class_get_name(fieldClass) : "Unknown";
+    void* fieldAddr;
+    
+    size_t offset = il2cpp_field_get_offset(field);
+    if (isValueType){
+        fieldAddr = (void*)((uintptr_t)baseAddr + offset - 0x10);
+    }else{
+        fieldAddr = (void*)((uintptr_t)baseAddr + offset);
+    }
+    if(!IsValidPtr(fieldAddr))
+    {     
+        ImGui::TextDisabled("%s [Invalid Address]", fieldName);
+        return;                       
+    }
+
+    ImGui::PushID(fieldName);         
+
+    __try {                            
+    switch(typeEnum){
+        case IL2CPP_TYPE_I4: {         
+            int val;
+            il2cpp_field_get_value((Il2CppObject*)baseAddr, field, &val);
+            if (ImGui::InputInt(fieldName, &val)) {
+                il2cpp_field_set_value((Il2CppObject*)baseAddr, field, &val);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_R4: {
+            float fval;           
+            il2cpp_field_get_value((Il2CppObject*)baseAddr, field, &fval);
+            if (ImGui::InputFloat(fieldName, &fval, 0.1f, 1.0f, "%.3f")) {
+                il2cpp_field_set_value((Il2CppObject*)baseAddr, field, &fval);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_BOOLEAN: {
+            bool bval;
+            il2cpp_field_get_value((Il2CppObject*)baseAddr, field, &bval);
+            if (ImGui::Checkbox(fieldName, &bval)) {
+                il2cpp_field_set_value((Il2CppObject*)baseAddr, field, &bval);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_STRING: {    
+            Il2CppString* str = nullptr;
+            il2cpp_field_get_value((Il2CppObject*)baseAddr, field, &str);
+            if (str && IsValidPtr(str)) {
+                int len = *(int*)((uintptr_t)str + 0x10);
+                if (len > 0 && len < 256) {
+                    char buf[256];
+                    wchar_t* chars = (wchar_t*)((uintptr_t)str + 0x14);
+                    WideCharToMultiByte(CP_UTF8, 0, chars, len, buf, sizeof(buf), NULL, NULL);
+                    buf[len < 255 ? len : 255] = '\0';
+                    ImGui::Text("%s: \"%s\"", fieldName, buf);
+                } else {
+                    ImGui::Text("%s: \"\"", fieldName);
+                }
+            } else {
+                ImGui::TextDisabled("%s: null", fieldName);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_CLASS: {
+            void* refPtr = *(void**)fieldAddr;
+            if(IsValidPtr(refPtr) && depth < 3){
+                if(ImGui::TreeNode(fieldName)) {     
+                    Il2CppClass* refClass = il2cpp_object_get_class((Il2CppObject*)refPtr); 
+                    DrawObjectFields(refPtr, refClass, depth + 1, false);
+                    ImGui::TreePop();
+                }
+            }
+            else {
+                ImGui::TextDisabled("%s (%s) = null", fieldName, typeName);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_VALUETYPE: {
+            if(depth < 3 && fieldClass){
+                if(ImGui::TreeNode(fieldName)) {     
+                    DrawObjectFields(fieldAddr, fieldClass, depth + 1, true);
+                    ImGui::TreePop();
+                }
+            }
+            else {
+                ImGui::TextDisabled("%s (%s) [Max Depth]", fieldName, typeName);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_I1: {         
+            int8_t raw;
+            il2cpp_field_get_value((Il2CppObject*)baseAddr, field, &raw);
+            int temp = (int)raw;
+            if (ImGui::InputInt(fieldName, &temp)) {
+                raw = (int8_t)temp;
+                il2cpp_field_set_value((Il2CppObject*)baseAddr, field, &raw);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_U1: {
+            uint8_t raw;
+            il2cpp_field_get_value((Il2CppObject*)baseAddr, field, &raw);
+            int temp = (int)raw;
+            if (ImGui::InputInt(fieldName, &temp)) {
+                raw = (uint8_t)temp;
+                il2cpp_field_set_value((Il2CppObject*)baseAddr, field, &raw);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_I2: {
+            int16_t raw;
+            il2cpp_field_get_value((Il2CppObject*)baseAddr, field, &raw);
+            int temp = (int)raw;
+            if (ImGui::InputInt(fieldName, &temp)) {
+                raw = (int16_t)temp;
+                il2cpp_field_set_value((Il2CppObject*)baseAddr, field, &raw);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_U2: {
+            uint16_t raw;
+            il2cpp_field_get_value((Il2CppObject*)baseAddr, field, &raw);
+            int temp = (int)raw;
+            if (ImGui::InputInt(fieldName, &temp)) {
+                raw = (uint16_t)temp;
+                il2cpp_field_set_value((Il2CppObject*)baseAddr, field, &raw);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_U4: {
+            uint32_t raw;
+            il2cpp_field_get_value((Il2CppObject*)baseAddr, field, &raw);
+            int temp = (int)raw;
+            if (ImGui::InputInt(fieldName, &temp)) {
+                raw = (uint32_t)temp;
+                il2cpp_field_set_value((Il2CppObject*)baseAddr, field, &raw);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_I8: {
+            int64_t i64val;
+            il2cpp_field_get_value((Il2CppObject*)baseAddr, field, &i64val);
+            if (ImGui::InputScalar(fieldName, ImGuiDataType_S64, &i64val)) {  
+                il2cpp_field_set_value((Il2CppObject*)baseAddr, field, &i64val);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_U8: {
+            uint64_t u64val;
+            il2cpp_field_get_value((Il2CppObject*)baseAddr, field, &u64val);
+            if (ImGui::InputScalar(fieldName, ImGuiDataType_U64, &u64val)) {
+                il2cpp_field_set_value((Il2CppObject*)baseAddr, field, &u64val);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_R8: {
+            double dval;
+            il2cpp_field_get_value((Il2CppObject*)baseAddr, field, &dval);
+            if (ImGui::InputDouble(fieldName, &dval)) {
+                il2cpp_field_set_value((Il2CppObject*)baseAddr, field, &dval);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_OBJECT: {    
+            void* refPtr = *(void**)fieldAddr;
+            if(IsValidPtr(refPtr) && depth < 3){
+                if(ImGui::TreeNode(fieldName)) {
+                    Il2CppClass* refClass = il2cpp_object_get_class((Il2CppObject*)refPtr);
+                    DrawObjectFields(refPtr, refClass, depth + 1, false);
+                    ImGui::TreePop();
+                }
+            } else {
+                ImGui::TextDisabled("%s (Object) = null", fieldName);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_ENUM: {     
+            int enumVal;
+            il2cpp_field_get_value((Il2CppObject*)baseAddr, field, &enumVal);
+            if (ImGui::InputInt(fieldName, &enumVal)) {
+                il2cpp_field_set_value((Il2CppObject*)baseAddr, field, &enumVal);
+            }
+            break;
+        }
+        case IL2CPP_TYPE_GENERICINST: {
+            ImGui::TextDisabled("%s (%s) [Generic]", fieldName, typeName);
+            break;
+        }
+        default: {
+            ImGui::TextDisabled("%s (%s) [Type: 0x%X]", fieldName, typeName, typeEnum);
+            break;
+        }
+    }
+
+    } __except(1) {
+        ImGui::TextColored(ImVec4(1,0,0,1), "%s [ERROR]", fieldName);
+    }
+
+    ImGui::PopID();
+}
+void DrawObjectFields(void* baseAddr, Il2CppClass* klass, int depth, bool isValueType){
+    if (baseAddr == nullptr || klass == nullptr || depth > 3) return;
+    const char* className = il2cpp_class_get_name(klass);
+    ImGui::PushID(className);
+    void* iter = nullptr;
+    FieldInfo* field = nullptr;
+
+    while ((field = il2cpp_class_get_fields(klass, &iter)) != nullptr) {
+        int flags = il2cpp_field_get_flags(field);
+        if (flags & 0x10) continue;
+        DrawFieldEditor(baseAddr, field, depth, isValueType);
+    }
+    ImGui::PopID();
+    Il2CppClass* parent = il2cpp_class_get_parent(klass);
+    if (parent) {
+        const char* parentName = il2cpp_class_get_name(parent);
+        if (strcmp(parentName, "MonoBehaviour") != 0 && 
+            strcmp(parentName, "Behaviour") != 0 &&
+            strcmp(parentName, "Component") != 0){
+            DrawObjectFields((void*)baseAddr, parent, depth, isValueType);
+        }
+    }
+}
+
 void DrawComponentInspector(void* component) {
     if (!component) return;
 
@@ -471,49 +702,7 @@ void DrawComponentInspector(void* component) {
     const char* className = il2cpp_class_get_name(klass);
 
     if (ImGui::CollapsingHeader(className)) {
-        ImGui::Indent();
-
-        void* iter = nullptr;
-        FieldInfo* field = nullptr;
-
-        while ((field = il2cpp_class_get_fields(klass, &iter)) != nullptr) {
-            const char* fieldName = il2cpp_field_get_name(field);
-
-            const Il2CppType* type = il2cpp_field_get_type(field);
-            Il2CppClass* fieldClass = il2cpp_class_from_type(type);
-            const char* typeName = il2cpp_class_get_name(fieldClass);
-
-            ImGui::PushID(fieldName);
-
-            if (strcmp(typeName, "Int32") == 0) {
-                int val;
-                il2cpp_field_get_value((Il2CppObject*)component, field, &val);
-                if (ImGui::InputInt(fieldName, &val)) {
-                    il2cpp_field_set_value((Il2CppObject*)component, field, &val);
-                }
-            }
-            else if (strcmp(typeName, "Single") == 0) {
-                float val;
-                il2cpp_field_get_value((Il2CppObject*)component, field, &val);
-                if (ImGui::InputFloat(fieldName, &val, 0.1f, 1.0f, "%.3f")) {
-                    il2cpp_field_set_value((Il2CppObject*)component, field, &val);
-                }
-            }
-            else if (strcmp(typeName, "Boolean") == 0) {
-                bool val;
-                il2cpp_field_get_value((Il2CppObject*)component, field, &val);
-                if (ImGui::Checkbox(fieldName, &val)) {
-                    il2cpp_field_set_value((Il2CppObject*)component, field, &val);
-                }
-            }
-            else {
-                ImGui::TextDisabled("%s (%s)", fieldName, typeName);
-            }
-
-            ImGui::PopID();
-        }
-
-        ImGui::Unindent();
+        DrawObjectFields(component, klass, 0, false);
     }
 }
 void RefreshLivingEntities(std::string unityType) {

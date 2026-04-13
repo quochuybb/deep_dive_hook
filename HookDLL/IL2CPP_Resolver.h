@@ -56,6 +56,17 @@ enum Il2CppTypeEnum {
     IL2CPP_TYPE_STRING = 0xe,
     IL2CPP_TYPE_CLASS = 0x12,
     IL2CPP_TYPE_VALUETYPE = 0x11,
+    IL2CPP_TYPE_I1 = 0x04,   // SByte
+    IL2CPP_TYPE_U1 = 0x05,   // Byte  
+    IL2CPP_TYPE_I2 = 0x06,   // Int16
+    IL2CPP_TYPE_U2 = 0x07,   // UInt16
+    IL2CPP_TYPE_U4 = 0x09,   // UInt32
+    IL2CPP_TYPE_I8 = 0x0A,   // Int64
+    IL2CPP_TYPE_U8 = 0x0B,   // UInt64
+    IL2CPP_TYPE_R8 = 0x0D,   // Double
+    IL2CPP_TYPE_OBJECT = 0x1C,
+    IL2CPP_TYPE_GENERICINST = 0x15,
+    IL2CPP_TYPE_ENUM = 0x55,
 };
 
 struct Il2CppType {
@@ -63,7 +74,9 @@ struct Il2CppType {
     unsigned int bits;
     Il2CppTypeEnum type;
 };
-
+typedef Il2CppClass* (*t_il2cpp_class_get_parent)(Il2CppClass* klass);
+typedef bool (*t_il2cpp_class_is_valuetype)(Il2CppClass* klass);
+typedef size_t (*t_il2cpp_field_get_offset)(FieldInfo* field);
 typedef Il2CppDomain* (*t_il2cpp_domain_get)();
 typedef Il2CppAssembly** (*t_il2cpp_domain_get_assemblies)(const Il2CppDomain* domain, size_t* size);
 typedef Il2CppClass* (*t_il2cpp_class_from_name)(const Il2CppImage* image, const char* namespaze, const char* name);
@@ -94,6 +107,9 @@ typedef void* (*t_il2cpp_object_new)(Il2CppClass* klass);
 typedef FieldInfo* (*t_il2cpp_class_get_field_from_name)(Il2CppClass* klass, const char* name);
 typedef const char* (*t_il2cpp_image_get_name)(const Il2CppImage* image);
 
+extern t_il2cpp_class_get_parent il2cpp_class_get_parent;
+extern t_il2cpp_class_is_valuetype il2cpp_class_is_valuetype;
+extern t_il2cpp_field_get_offset il2cpp_field_get_offset;
 extern t_il2cpp_image_get_name il2cpp_image_get_name;
 extern t_il2cpp_method_get_param il2cpp_method_get_param;
 extern t_il2cpp_class_from_type il2cpp_class_from_type;
